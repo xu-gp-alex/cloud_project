@@ -11,6 +11,10 @@ static bool migrating = false;
 static unsigned active_machines = 16;
 
 void Scheduler::Init() {
+
+    // dev notes: testing
+    printf("%d tasks scheduled", GetNumTasks());
+
     // Find the parameters of the clusters
     // Get the total number of machines
     // For each machine:
@@ -120,7 +124,7 @@ void HandleTaskCompletion(Time_t time, TaskId_t task_id) {
 
 void MemoryWarning(Time_t time, MachineId_t machine_id) {
     // The simulator is alerting you that machine identified by machine_id is overcommitted
-    SimOutput("MemoryWarning(): Overflow at " + to_string(machine_id) + " was detected at time " + to_string(time), 0);
+    // SimOutput("MemoryWarning(): Overflow at " + to_string(machine_id) + " was detected at time " + to_string(time), 0);
 }
 
 void MigrationDone(Time_t time, VMId_t vm_id) {
