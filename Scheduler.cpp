@@ -78,8 +78,9 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
 
         // u + v < 1
         // how to keep track of vms!?
-        if (u + v < curr.memory_size) {
+        if (u + v < curr.memory_size && task.required_cpu == curr.cpu) {
             VMId_t new_vm = VM_Create(task.required_vm, task.required_cpu);
+            VM_Attach(new_vm, curr.machine_id);
             VM_AddTask(new_vm, task_id, task.priority);
             return;
         }
@@ -93,7 +94,7 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
 
         // u + v < 1
         // how to keep track of vms!?
-        if (u + v < curr.memory_size) {
+        if (u + v < curr.memory_size && task.required_cpu == curr.cpu) {
 
             Machine_SetState(curr.machine_id, S0);
 
@@ -102,6 +103,7 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
             inactive_machines.erase(inactive_machines.begin() + j);
 
             VMId_t new_vm = VM_Create(task.required_vm, task.required_cpu);
+            VM_Attach(new_vm, curr.machine_id);
             VM_AddTask(new_vm, task_id, task.priority);
         }
     }
