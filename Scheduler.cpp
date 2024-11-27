@@ -7,14 +7,14 @@
 
 #include "Scheduler.hpp"
 
-static bool migrating = false;
-static unsigned active_machines = 16;
+// static bool migrating = false;
+// static unsigned active_machines = 16;
+
+// bool mem_comparison(MachineId_t a, MachineId_t b) {
+//     return Machine_GetInfo(a).memory_used < Machine_GetInfo(b).memory_used;
+// }
 
 void Scheduler::Init() {
-
-    // dev notes: testing
-    printf("%d tasks scheduled", GetNumTasks());
-
     // Find the parameters of the clusters
     // Get the total number of machines
     // For each machine:
@@ -25,25 +25,21 @@ void Scheduler::Init() {
     // 
     SimOutput("Scheduler::Init(): Total number of machines is " + to_string(Machine_GetTotal()), 3);
     SimOutput("Scheduler::Init(): Initializing scheduler", 1);
-    for(unsigned i = 0; i < active_machines; i++)
-        vms.push_back(VM_Create(LINUX, X86));
-    for(unsigned i = 0; i < active_machines; i++) {
-        machines.push_back(MachineId_t(i));
-    }    
-    for(unsigned i = 0; i < active_machines; i++) {
-        VM_Attach(vms[i], machines[i]);
+    int totalMachines = Machine_GetTotal();
+    for (int i = 0; i < totalMachines; i++)
+    {
+        MachineInfo_t newMachine = Machine_GetInfo(i);
+        inactive_machines.push_back(newMachine.machine_id);
     }
 
-    bool dynamic = false;
-    if(dynamic)
-        for(unsigned i = 0; i<4 ; i++)
-            for(unsigned j = 0; j < 8; j++)
-                Machine_SetCorePerformance(MachineId_t(0), j, P3);
-    // Turn off the ARM machines
-    for(unsigned i = 24; i < Machine_GetTotal(); i++)
-        Machine_SetState(MachineId_t(i), S5);
-
-    SimOutput("Scheduler::Init(): VM ids are " + to_string(vms[0]) + " ahd " + to_string(vms[1]), 3);
+    // bool dynamic = false;
+    // if(dynamic)
+    //     for(unsigned i = 0; i<4 ; i++)
+    //         for(unsigned j = 0; j < 8; j++)
+    //             Machine_SetCorePerformance(MachineId_t(0), j, P3);
+    // // Turn off the ARM machines
+    // for(unsigned i = 24; i < Machine_GetTotal(); i++)
+    //     Machine_SetState(MachineId_t(i), S5);
 }
 
 void Scheduler::MigrationComplete(Time_t time, VMId_t vm_id) {
@@ -68,13 +64,47 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
     // Turn on a machine, migrate an existing VM from a loaded machine....
     //
     // Other possibilities as desired
-    Priority_t priority = (task_id == 0 || task_id == 64)? HIGH_PRIORITY : MID_PRIORITY;
-    if(migrating) {
-        VM_AddTask(vms[0], task_id, priority);
+    // Priority_t priority = (task_id == 0 || task_id == 64)? HIGH_PRIORITY : MID_PRIORITY;
+
+
+    // one vm per task
+    // starting with active machines, then inactive machines
+    // assuming that "active_machines" contains machine ids as entries
+    for (int j = 0; j < (int) active_machines.size(); j++) {
+        MachineInfo_t curr = Machine_GetInfo(active_machines[j]);
+        TaskInfo_t    task = GetTaskInfo(task_id);
+        unsigned u = curr.memory_used;
+        unsigned v = task.required_memory;
+
+        // u + v < 1
+        // how to keep track of vms!?
+        if (u + v < curr.memory_size) {
+            VMId_t new_vm = VM_Create(task.required_vm, task.required_cpu);
+            VM_AddTask(new_vm, task_id, task.priority);
+            return;
+        }
     }
-    else {
-        VM_AddTask(vms[task_id % active_machines], task_id, priority);
-    }// Skeleton code, you need to change it according to your algorithm
+
+    for (int j = 0; j < (int) inactive_machines.size(); j++) {
+        MachineInfo_t curr = Machine_GetInfo(inactive_machines[j]);
+        TaskInfo_t    task = GetTaskInfo(task_id);
+        unsigned u = curr.memory_used;
+        unsigned v = task.required_memory;
+
+        // u + v < 1
+        // how to keep track of vms!?
+        if (u + v < curr.memory_size) {
+
+            Machine_SetState(curr.machine_id, S0);
+
+            // cursed asf
+            active_machines.push_back(curr.machine_id);
+            inactive_machines.erase(inactive_machines.begin() + j);
+
+            VMId_t new_vm = VM_Create(task.required_vm, task.required_cpu);
+            VM_AddTask(new_vm, task_id, task.priority);
+        }
+    }
 }
 
 void Scheduler::PeriodicCheck(Time_t now) {
@@ -131,19 +161,19 @@ void MigrationDone(Time_t time, VMId_t vm_id) {
     // The function is called on to alert you that migration is complete
     SimOutput("MigrationDone(): Migration of VM " + to_string(vm_id) + " was completed at time " + to_string(time), 4);
     Scheduler.MigrationComplete(time, vm_id);
-    migrating = false;
+    // migrating = false;
 }
 
 void SchedulerCheck(Time_t time) {
     // This function is called periodically by the simulator, no specific event
     SimOutput("SchedulerCheck(): SchedulerCheck() called at " + to_string(time), 4);
     Scheduler.PeriodicCheck(time);
-    static unsigned counts = 0;
-    counts++;
-    if(counts == 10) {
-        migrating = true;
-        VM_Migrate(1, 9);
-    }
+    // static unsigned counts = 0;
+    // counts++;
+    // if(counts == 10) {
+    //     migrating = true;
+    //     VM_Migrate(1, 9);
+    // }
 }
 
 void SimulationComplete(Time_t time) {
