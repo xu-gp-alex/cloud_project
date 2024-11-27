@@ -7,11 +7,51 @@
 
 #include "Scheduler.hpp"
 
-// static bool migrating = false;
-// static unsigned active_machines = 16;
+// own imports...
+#include <bits/stdc++.h>
+#include <iostream>
+#include <unordered_map>
+#include <utility>
 
-// bool mem_comparison(MachineId_t a, MachineId_t b) {
-//     return Machine_GetInfo(a).memory_used < Machine_GetInfo(b).memory_used;
+using namespace std;
+
+// vms on a machine
+typedef struct {
+    MachineId_t machine;
+    vector<VMId_t> vms;
+} Box;
+
+
+// todo: figure out why active[j] is required to update correctly
+vector<Box> active;
+vector<Box> inactive;
+
+// to find task --> machine/vm links
+// todo: find soln w/out casting?
+// map<TaskId_t, pair<MachineId_t, VMId_t>>
+unordered_map<unsigned int, pair<unsigned int, unsigned int> > task_to_vm;
+
+// todo: reenable migrating var?
+// static bool migrating = false;
+
+// actually good soln?
+// list of vms per machine
+vector<vector<VMId_t>> resources;
+// lists of active and inactive machines
+vector<MachineId_t> active;
+vector<MachineId_t> inactive;
+
+// todo: perhaps should compare mem_size - mem_used
+bool mem_rev_comp(Box a, Box b) {
+    return Machine_GetInfo(a.machine).memory_used > Machine_GetInfo(b.machine).memory_used;
+}
+
+// todo: find soln so the following can be deleted
+// Box get_box_by_machine_id(MachineId_t tgt, vector<Box> &list) {
+//     for (int i = 0; i < (int) list.size(); i++) {
+//         if ()
+//     }
+//     return NULL;
 // }
 
 void Scheduler::Init() {
@@ -26,20 +66,15 @@ void Scheduler::Init() {
     SimOutput("Scheduler::Init(): Total number of machines is " + to_string(Machine_GetTotal()), 3);
     SimOutput("Scheduler::Init(): Initializing scheduler", 1);
     int totalMachines = Machine_GetTotal();
-    for (int i = 0; i < totalMachines; i++)
+    for (int i = 0; i < totalMachines; i++) 
     {
         MachineInfo_t newMachine = Machine_GetInfo(i);
-        inactive_machines.push_back(newMachine.machine_id);
-    }
+        // cout << "always the case: " << (unsigned int) newMachine.machine_id << " = " << i << endl;
 
-    // bool dynamic = false;
-    // if(dynamic)
-    //     for(unsigned i = 0; i<4 ; i++)
-    //         for(unsigned j = 0; j < 8; j++)
-    //             Machine_SetCorePerformance(MachineId_t(0), j, P3);
-    // // Turn off the ARM machines
-    // for(unsigned i = 24; i < Machine_GetTotal(); i++)
-    //     Machine_SetState(MachineId_t(i), S5);
+        Box curr;
+        curr.machine = newMachine.machine_id;
+        inactive.push_back(curr);
+    }
 }
 
 void Scheduler::MigrationComplete(Time_t time, VMId_t vm_id) {
@@ -64,47 +99,51 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
     // Turn on a machine, migrate an existing VM from a loaded machine....
     //
     // Other possibilities as desired
-    // Priority_t priority = (task_id == 0 || task_id == 64)? HIGH_PRIORITY : MID_PRIORITY;
 
-
-    // one vm per task
     // starting with active machines, then inactive machines
-    // assuming that "active_machines" contains machine ids as entries
-    for (int j = 0; j < (int) active_machines.size(); j++) {
-        MachineInfo_t curr = Machine_GetInfo(active_machines[j]);
-        TaskInfo_t    task = GetTaskInfo(task_id);
-        unsigned u = curr.memory_used;
-        unsigned v = task.required_memory;
+    // assumption: one task per vm
+    TaskInfo_t task = GetTaskInfo(task_id);
+    unsigned v = task.required_memory;
 
-        // u + v < 1
-        // how to keep track of vms!?
+    for (int j = 0; j < (int) active.size(); j++) {
+        MachineInfo_t curr = Machine_GetInfo(active[j].machine);
+        unsigned u = curr.memory_used;
+
         if (u + v < curr.memory_size && task.required_cpu == curr.cpu) {
             VMId_t new_vm = VM_Create(task.required_vm, task.required_cpu);
             VM_Attach(new_vm, curr.machine_id);
             VM_AddTask(new_vm, task_id, task.priority);
+            active[j].vms.push_back(new_vm);
+
+            // new code for task --> vm link
+            task_to_vm[(unsigned int) task_id] = make_pair(
+                    (unsigned int) curr.machine_id, (unsigned int) new_vm
+            );
+
             return;
         }
     }
 
-    for (int j = 0; j < (int) inactive_machines.size(); j++) {
-        MachineInfo_t curr = Machine_GetInfo(inactive_machines[j]);
-        TaskInfo_t    task = GetTaskInfo(task_id);
+    for (int j = 0; j < (int) inactive.size(); j++) {
+        MachineInfo_t curr = Machine_GetInfo(inactive[j].machine);
         unsigned u = curr.memory_used;
-        unsigned v = task.required_memory;
 
-        // u + v < 1
-        // how to keep track of vms!?
         if (u + v < curr.memory_size && task.required_cpu == curr.cpu) {
-
             Machine_SetState(curr.machine_id, S0);
-
-            // cursed asf
-            active_machines.push_back(curr.machine_id);
-            inactive_machines.erase(inactive_machines.begin() + j);
 
             VMId_t new_vm = VM_Create(task.required_vm, task.required_cpu);
             VM_Attach(new_vm, curr.machine_id);
             VM_AddTask(new_vm, task_id, task.priority);
+            inactive[j].vms.push_back(new_vm);
+
+            // new code for task --> vm link
+            task_to_vm[(unsigned int) task_id] = make_pair(
+                    (unsigned int) curr.machine_id, (unsigned int) new_vm
+            );
+
+            active.push_back(inactive[j]);
+            inactive.erase(inactive.begin() + j);
+            return;
         }
     }
 }
@@ -192,7 +231,70 @@ void SimulationComplete(Time_t time) {
 }
 
 void SLAWarning(Time_t time, TaskId_t task_id) {
-    
+    -- Pseudocode --
+    Assume workload i violates SLA on machine J
+    Sort all j in m in a set s in ascending order of u
+    Find a machine that can accommodate the load factor of i (other than J)
+    Found? Migrate i
+    Else PM on standby? Migrate i
+    Else Failure
+
+    assumption: look thru active machines, if unsuccessful then inactive machine
+    std::sort(active.begin(), active.end(), mem_rev_comp);
+    MachineId_t prev_machine = (MachineId_t) task_to_vm[task_id].first;
+
+    TaskInfo_t task = GetTaskInfo(task_id);
+    unsigned v = task.required_memory;
+
+    VMId_t curr_vm = (VMId_t) task_to_vm[task_id].second;
+
+    for (int j = 0; j < active.size(); j++) {
+        if (active[j].machine == prev_machine) {
+            continue;
+        }
+        
+        MachineInfo_t curr = Machine_GetInfo(active[j].machine);
+
+        unsigned u = curr.memory_used;
+        if (u + v < curr.memory_size && task.required_cpu == curr.cpu) {
+            VM_Migrate(curr_vm, active[j].machine);
+            // todo: update unordered_map<> task_to_vm
+            task_to_vm[task_id].first = active[j].machine;
+            // todo: update active[j].machine (new machine)
+            active[j].vms.push_back(curr_vm);
+            // todo: update prev_machine (old machine)??
+            // vector<VMId_t> temp = find(active.)
+            // "erase-remove idiom"
+            temp.erase(remove(temp.begin(), temp.end(), curr_vm), temp.end());
+            return;
+            
+        }
+    }
+
+    // if no active machines avaliable, move to inactive machine
+    for (int j = 0; j < (int) inactive.size(); j++) {
+        // Box curr_box = inactive[j];
+        MachineInfo_t curr = Machine_GetInfo(inactive[j].machine);
+        unsigned u = curr.memory_used;
+
+        if (u + v < curr.memory_size && task.required_cpu == curr.cpu) {
+            Machine_SetState(curr.machine_id, S0);
+
+            VMId_t new_vm = VM_Create(task.required_vm, task.required_cpu);
+            VM_Attach(new_vm, curr.machine_id);
+            VM_Migrate((VMId_t) task_to_vm[task_id].second, inactive[j].machine);
+            inactive[j].vms.push_back(new_vm);
+
+            // new code for task --> vm link
+            task_to_vm[task_id].first = curr.machine_id;
+            task_to_vm[task_id].second = new_vm;
+
+            active.push_back(inactive[j]);
+            inactive.erase(inactive.begin() + j);
+            return;
+        }
+    }
+
 }
 
 void StateChangeComplete(Time_t time, MachineId_t machine_id) {

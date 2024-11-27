@@ -102,6 +102,7 @@ typedef struct {
     MachineState_t s_state;                 // The current S state of the machine
     CPUPerformance_t p_state;               // The current P state of the CPUs (all CPUs are set to the same P state to simplify scheduling
     MachineId_t machine_id;                 // The identifier of the machine
+    vector<VMInfo_t> vms;
 } MachineInfo_t;
 
 typedef struct {
