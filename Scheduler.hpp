@@ -24,14 +24,8 @@ public:
 private:
     vector<VMId_t> vms;
     vector<MachineId_t> machines;
-
-    // potential structures for greedy implementation
-    vector<MachineId_t> active_machines;
-    vector<MachineId_t> inactive_machines;
 };
 
-// dev notes: i swear to god i am committing fucking war crimes
-//            what a fucking shitty bug
-// vector<vector<VMId_t>>
+
 
 #endif /* Scheduler_hpp */
