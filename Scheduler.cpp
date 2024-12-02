@@ -8,17 +8,41 @@
 #include "Scheduler.hpp"
 
 // own imports
-#include <bits/stdc++.h>
+// for erase and remove
+#include <algorithm>
+#include <unordered_map>
 
 using namespace std;
-
-// list of vms per machine
+//stores machines and vms on the machines
 vector<vector<VMId_t>> machine_matrix;
+// list of vms per machine
 int total_machines;
 
 // lists of active and inactive machines
 vector<MachineId_t> active;
 vector<MachineId_t> inactive;
+
+// // task->vm mapping
+// struct task_hash {
+//    size_t operator()(const TaskId_t &a) const {
+//        return hash<unsigned>()((unsigned) a);
+//    }
+// };
+
+// struct task_equal {
+//    bool operator()(const TaskId_t &a, const TaskId_t &b) const {
+//        return (unsigned) a == (unsigned) b;
+//    }
+// };
+
+// // task -> vm data structure
+// unordered_map<TaskId_t, VMId_t, task_hash, task_equal> task_to_vm;
+
+unordered_map<unsigned, unsigned> task_to_vm;
+
+// for testing - stores vms that are currently being migrated
+#include <unordered_set>
+unordered_set<unsigned> migrating_vms; 
 
 /*
 Gets the total utilization of a vm
@@ -31,11 +55,10 @@ double vm_utilization(MachineId_t machine_id, VMId_t vm_id) {
     for (TaskId_t task_id : tasks) {
         TaskInfo_t task_info = GetTaskInfo(task_id);
         MachineInfo_t machine_info = Machine_GetInfo(machine_id);
-
-        utilization += 1.0 * task_info.remaining_instructions / 
-                machine_info.performance[machine_info.p_state];
+        utilization += (double) task_info.remaining_instructions / 
+                        (double) (machine_info.performance[machine_info.p_state] 
+                                * machine_info.num_cpus * 1000000);
     }
-
 	return utilization;
 }
 
@@ -75,13 +98,15 @@ void Scheduler::Init() {
     SimOutput("Scheduler::Init(): Total number of machines is " + to_string(Machine_GetTotal()), 3);
     SimOutput("Scheduler::Init(): Initializing scheduler", 1);
     total_machines = Machine_GetTotal();
-
+    active = {};
+    inactive = {};
     printf("total_machines: %d\n", total_machines);
     for (int i = 0; i < total_machines; ++i) {
         inactive.push_back((MachineId_t) i);
         vector<VMId_t> temp = {};
         machine_matrix.push_back(temp);
-        Machine_SetState(i, S5);
+        // Machine_SetState(i, S5);
+        Machine_SetState(i, S0);
     }
 }
 
@@ -89,6 +114,8 @@ void Scheduler::MigrationComplete(Time_t time, VMId_t vm_id) {
     // Update your data structure. The VM now can receive new tasks
     MachineId_t machine_id = VM_GetInfo(vm_id).machine_id;
     machine_matrix[machine_id].push_back(vm_id);
+
+    printf("vm %d finished migrating on machine %d\n", vm_id, machine_id);
 }
 
 void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
@@ -109,11 +136,15 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
     // Turn on a machine, migrate an existing VM from a loaded machine....
     //
     // Other possibilities as desired
+    printf("gotten new task %u at time %lu\n", (unsigned) task_id, (uint64_t) now);
     TaskInfo_t task_info = GetTaskInfo(task_id);
 
     for(MachineId_t id : active) {
         MachineInfo_t curr_machine = Machine_GetInfo(id);
-        double task_utilization = 1.0 * task_info.remaining_instructions / curr_machine.performance[curr_machine.p_state];
+        double task_utilization = (double) task_info.remaining_instructions / 
+                           (double) (curr_machine.performance[curr_machine.p_state] * 
+                            curr_machine.num_cpus * 1000000);
+        // printf("machine util: %f, task util: %f\n", machine_utilization(id), task_utilization);
         if(curr_machine.cpu == task_info.required_cpu && 
             task_utilization + machine_utilization(id) < 1.0 && 
             curr_machine.memory_used + task_info.required_memory + 8 < curr_machine.memory_size) {
@@ -121,6 +152,8 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
                 VM_Attach(new_vm, id);
                 VM_AddTask(new_vm, task_id, HIGH_PRIORITY);
                 machine_matrix[id].push_back(new_vm);
+                task_to_vm[task_id] = new_vm;
+                printf("added new task %u\n", (unsigned) task_id);
                 return;
             }
     }
@@ -129,15 +162,34 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
         MachineInfo_t curr_machine = Machine_GetInfo(id);
         if(curr_machine.cpu == task_info.required_cpu) {
             inactive.erase(remove(inactive.begin(), inactive.end(), id), inactive.end());
-            Machine_SetState(id, S0);
+            // Machine_SetState(id, S0);
             active.push_back(id);
             VMId_t new_vm = VM_Create(task_info.required_vm, task_info.required_cpu);
             VM_Attach(new_vm, id);
             VM_AddTask(new_vm, task_id, HIGH_PRIORITY);
             machine_matrix[id].push_back(new_vm);
+            task_to_vm[task_id] = new_vm;
+            printf("added new task %u\n", (unsigned) task_id);
             return;
         }
     }
+    // printf("did not add new task %u\n", (unsigned) task_id);
+    
+    //put on a random machine
+    for(MachineId_t id : active) {
+        MachineInfo_t curr_machine = Machine_GetInfo(id);
+        // printf("machine util: %f, task util: %f\n", machine_utilization(id), task_utilization);
+        if(curr_machine.cpu == task_info.required_cpu) {
+                VMId_t new_vm = VM_Create(task_info.required_vm, task_info.required_cpu);
+                VM_Attach(new_vm, id);
+                VM_AddTask(new_vm, task_id, HIGH_PRIORITY);
+                machine_matrix[id].push_back(new_vm);
+                task_to_vm[task_id] = new_vm;
+                printf("added new task %u\n", (unsigned) task_id);
+                return;
+            }
+    }
+
 }
 
 void Scheduler::PeriodicCheck(Time_t now) {
@@ -151,10 +203,10 @@ void Scheduler::Shutdown(Time_t time) {
     // Do your final reporting and bookkeeping here.
     // Report about the total energy consumed
     // Report about the SLA compliance
-    // Shutdown everything to be tidy :-)
-    for(auto & vm: vms) {
-        VM_Shutdown(vm);
-    }
+    // Shutdown everything to be tidy f:-)
+    // for(auto & vm: vms) {
+    //     VM_Shutdown(vm);
+    // }
     SimOutput("SimulationComplete(): Finished!", 4);
     SimOutput("SimulationComplete(): Time is " + to_string(time), 4);
 }
@@ -164,23 +216,21 @@ void Scheduler::TaskComplete(Time_t now, TaskId_t task_id) {
     // Decide if a machine is to be turned off, slowed down, or VMs to be migrated according to your policy
     // This is an opportunity to make any adjustments to optimize performance/energy
 // shutdown old vm
-    MachineId_t curr_machine = total_machines + 1;
-    for(MachineId_t id : active) {
-        vector<VMId_t> &vms = machine_matrix[id];
-        for(VMId_t vm_id : vms) {
-            VMInfo_t vm = VM_GetInfo(vm_id);
-            vector<TaskId_t> &tasks = vm.active_tasks;
-            for(TaskId_t task : tasks) {
-                printf("comparing %u against %u\n", (unsigned) task, (unsigned) task_id);
-                if(task == task_id) {
-                    printf("equality for TaskComplete\n");
-                    curr_machine = id;
-                    VM_Shutdown(vm_id);
-                    break;
-                }
-            }
-        }
+    VMId_t old_vm = task_to_vm[task_id];
+    MachineId_t curr_machine = VM_GetInfo(old_vm).machine_id;
+    task_to_vm.erase(task_id);
+    machine_matrix[curr_machine].erase(remove(machine_matrix[curr_machine].begin(), 
+        machine_matrix[curr_machine].end(), old_vm), machine_matrix[curr_machine].end());
+    if(VM_GetInfo(old_vm).active_tasks.size() == 0 && !migrating_vms.count(old_vm)) {
+        printf("old_vm id: %d\n", old_vm);
+        printf("old_vm util: %f\n", vm_utilization(curr_machine, old_vm));
+        VM_Shutdown(old_vm);
+        printf("past shutdown\n");
     }
+    // printf("old machine id: %u\n", (unsigned) old_vm);
+
+    // testing
+    printf("completed task %u\n", (unsigned) task_id);
 
     sort(active.begin(), active.end(), util_comp);
     for(MachineId_t machine_id : active) {
@@ -197,16 +247,21 @@ void Scheduler::TaskComplete(Time_t now, TaskId_t task_id) {
                 if(new_machine.cpu == vm_info.cpu &&
                     machine_utilization(machine_id) + vm_util < 1 &&
                     new_machine.memory_used + vm_memory + 8 < new_machine.memory_size) {
+                        vms.erase(remove(vms.begin(), vms.end(), vm_id), vms.end());
+                        printf("migrate from task complete\n");
                         VM_Migrate(vm_id, machine_id);
+                        migrating_vms.insert(vm_id);
                         break;
                     }
             }
         }
     }
 
-    printf("curr machine is %d\n", curr_machine);
-    if(curr_machine < total_machines && Machine_GetInfo(curr_machine).active_vms == 0) {
-        Machine_SetState(curr_machine, S5);
+    if(Machine_GetInfo(curr_machine).active_vms == 0) {
+        active.erase(remove(active.begin(), active.end(), curr_machine), active.end());
+        inactive.push_back(curr_machine);
+        printf("removed curr_machine %u from active\n", (unsigned) curr_machine);
+        // Machine_SetState(curr_machine, S5);
     }
     SimOutput("Scheduler::TaskComplete(): Task " + to_string(task_id) + " is complete at " + to_string(now), 4);
 }
@@ -240,10 +295,14 @@ void MigrationDone(Time_t time, VMId_t vm_id) {
     SimOutput("MigrationDone(): Migration of VM " + to_string(vm_id) + " was completed at time " + to_string(time), 4);
     Scheduler.MigrationComplete(time, vm_id);
     // migrating = false;
+
+    // testing
+    migrating_vms.erase(vm_id);
 }
 
 void SchedulerCheck(Time_t time) {
     // This function is called periodically by the simulator, no specific event
+    // printf("scheduler check called\n");
     SimOutput("SchedulerCheck(): SchedulerCheck() called at " + to_string(time), 4);
     Scheduler.PeriodicCheck(time);
 }
@@ -273,42 +332,39 @@ void SLAWarning(Time_t time, TaskId_t task_id) {
     // assumption: look thru active machines, if unsuccessful then inactive machine
     TaskInfo_t task_info = GetTaskInfo(task_id);
 
-    MachineId_t old_machine = total_machines + 1;
-    VMId_t old_vm = total_machines + 1;
+    VMId_t old_vm = task_to_vm[task_id];
+    MachineId_t old_machine = VM_GetInfo(old_vm).machine_id;
     
-    for(MachineId_t machine_id : active) {
-        vector<VMId_t> &vms = machine_matrix[machine_id];
+    // testing
+    printf("task %u (on vm %u) failed sla\n", (unsigned) task_id, old_vm);
+    printf("number of tasks: %ld\n", VM_GetInfo(old_vm).active_tasks.size());
 
-        for(VMId_t vm_id : vms) {
-            VMInfo_t vm = VM_GetInfo(vm_id);
-            vector<TaskId_t> &tasks = vm.active_tasks;
-            
-            for(TaskId_t task : tasks) {
-                if(task == task_id) {
-                    printf("equality for SLAWarning\n");
-                    old_machine = machine_id;
-                    old_vm = vm_id;
-                    break;
-                }
-            }
-        }
+    if(migrating_vms.count(old_vm)) {
+        printf("vm is still being migrated lol\n");
+        return;
     }
-    
+
     sort(active.begin(), active.end(), util_comp);
 
     for (MachineId_t id : active) {
         
         if (id != old_machine) {
             MachineInfo_t curr_machine = Machine_GetInfo(id);
-            double task_utilization = 1.0 * task_info.remaining_instructions / curr_machine.performance[curr_machine.p_state];
+            double task_utilization = (double) task_info.remaining_instructions 
+                            / (double) (curr_machine.performance[curr_machine.p_state]
+                            * curr_machine.num_cpus * 1000000);
             
             if(curr_machine.cpu == task_info.required_cpu && 
                     task_utilization + machine_utilization(id) < 1.0 && 
                     curr_machine.memory_used + task_info.required_memory + 8 < curr_machine.memory_size) {
                 
+
+                // testing
+                printf("migrate from sla warning (active machine)\n");
                 VM_Migrate(old_vm, id);
-                vector<VMId_t> &vms = machine_matrix[id];
-                vms.erase(remove(vms.begin(), vms.end(), old_vm), vms.end());
+                machine_matrix[id].erase(remove(machine_matrix[id].begin(), 
+                    machine_matrix[id].end(), old_vm), machine_matrix[id].end());
+                migrating_vms.insert(old_vm);
                 return;
             }
         }
@@ -319,16 +375,21 @@ void SLAWarning(Time_t time, TaskId_t task_id) {
         
         if (curr_machine.cpu == task_info.required_cpu) {
             inactive.erase(remove(inactive.begin(), inactive.end(), id), inactive.end());
-            Machine_SetState(id, S0);
+            // Machine_SetState(id, S0);
             active.push_back(id);
 
+            // testing
+            printf("migrate from sla warning (inactive machine)\n");
             VM_Migrate(old_vm, id);
-            vector<VMId_t> &vms = machine_matrix[id];
-            vms.erase(remove(vms.begin(), vms.end(), old_vm), vms.end());
-
+            // vector<VMId_t> &vms = machine_matrix[id];
+            machine_matrix[id].erase(remove(machine_matrix[id].begin(), 
+                    machine_matrix[id].end(), old_vm), machine_matrix[id].end());
+            migrating_vms.insert(old_vm);
             return;
         }
     }
+
+    printf("did not migrate:%d\n", task_id);
 }
 
 void StateChangeComplete(Time_t time, MachineId_t machine_id) {
