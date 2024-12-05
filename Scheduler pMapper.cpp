@@ -31,11 +31,14 @@ unordered_set<unsigned> migrating_vms;
 // store the machines that are currently being state changed, and info about it
 
 struct state_change_info {
-    bool for_new_task; //true if new task, false if slawarning
+    bool for_new_task; //true if new task, false if sla violation
     TaskId_t new_task_id;
     VMId_t sla_violating_vm;
 };
 unordered_map<unsigned, state_change_info> state_changing_machines;
+
+//store ordered list of machines based on their efficiency
+vector<unsigned> machine_efficiency;
 
 int rand_machine_index;
 
@@ -96,6 +99,18 @@ Priority_t sla_to_prio(SLAType_t sla) {
     return LOW_PRIORITY;
 }
 
+/*
+compare efficiency of two machines
+*/
+bool efficiency_comparator(MachineId_t a, MachineId_t b) {
+	double eff_a = (double) Machine_GetInfo(a).performance[0] / 
+                                    (double) Machine_GetInfo(a).s_states[0];
+	double eff_b = (double) Machine_GetInfo(b).performance[0] / 
+                                    (double) Machine_GetInfo(b).s_states[0];
+	return eff_a < eff_b;
+}
+
+
 
 void Scheduler::Init() {
     // Find the parameters of the clusters
@@ -116,11 +131,15 @@ void Scheduler::Init() {
         active.push_back(i);
         vector<VMId_t> temp = {};
         machine_matrix.push_back(temp);
+        machine_efficiency.push_back(i);
         // Machine_SetState(i, S0);
         //doesn't actually matter what this value is
         // state_change_info info = {false, 0, 0};
         // state_changing_machines[i] = info;
     }
+
+    sort(machine_efficiency.begin(), machine_efficiency.end(), efficiency_comparator);
+
 }
 
 void Scheduler::MigrationComplete(Time_t time, VMId_t vm_id) {
