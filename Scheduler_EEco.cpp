@@ -14,7 +14,7 @@
 #include <vector>
 
 static bool migrating = false;
-static unsigned active_machines = 16;
+// static unsigned active_machines = 16;
 
 // Managing machines
 vector<vector<MachineId_t>> machine_matrix;
@@ -76,6 +76,77 @@ double machine_utilization(MachineId_t machine_id, Time_t curr) {
 	return eff_mips / actual_mips;
 }
 
+unsigned task_eff_mips(MachineId_t machine_id, TaskId_t task_id, Time_t curr) {
+    TaskInfo_t info = GetTaskInfo(task_id);
+
+    // the most retarded check in mankind
+    if (info.remaining_instructions > info.total_instructions) {
+        return 0;
+    }
+
+    uint64_t remaining_instr = info.remaining_instructions;
+    uint64_t time_frame = info.target_completion - curr;
+
+    unsigned eff_mips = remaining_instr / time_frame;
+
+	return eff_mips;
+}
+
+unsigned vm_eff_mips(MachineId_t machine_id, VMId_t vm_id, Time_t curr) {
+    unsigned eff_mips = 0;
+
+    for (TaskId_t task_id : VM_GetInfo(vm_id).active_tasks) {
+        TaskInfo_t info = GetTaskInfo(task_id);
+
+        uint64_t remaining_instr = info.remaining_instructions;
+        uint64_t time_frame = info.target_completion - curr;
+
+        eff_mips += remaining_instr / time_frame;
+    }
+    
+	return eff_mips;
+}
+
+bool first_time = true;
+
+unsigned machine_eff_mips(MachineId_t machine_id, Time_t curr) {
+    unsigned eff_mips = 0;
+
+    for (VMId_t vm_id : machine_matrix[machine_id]) {
+        for (TaskId_t task_id : VM_GetInfo(vm_id).active_tasks) {
+            TaskInfo_t info = GetTaskInfo(task_id);
+
+            uint64_t remaining_instr = info.remaining_instructions;
+            uint64_t time_frame = info.target_completion - curr;
+
+            if (info.target_completion < curr) {
+                printf("ut tower shooting rd. 2\n");
+            }
+
+            // the most retarded check in mankind
+            if (remaining_instr > info.total_instructions) continue;
+
+            eff_mips += remaining_instr / time_frame;
+
+            if (eff_mips > 10000) {
+                // printf("cruel cruel cruel for m #%u\n", machine_id);
+            }
+        }
+    }
+    if (machine_id == 8 && eff_mips > 20000 && first_time) {
+
+        TaskId_t fuck = VM_GetInfo(machine_matrix[machine_id][0]).active_tasks[0];
+
+        printf("shitty machine %u mips: %u\n", machine_id, eff_mips);
+        printf("task #%u remains: %lu\n", fuck, GetTaskInfo(fuck).remaining_instructions);
+        printf("task #%u total: %lu\n", fuck, GetTaskInfo(fuck).total_instructions);
+        first_time = true;
+        first_time = false;
+    }
+
+    return eff_mips;
+}
+
 // Converts SLA to Priority
 Priority_t sla_to_prio(SLAType_t sla) {
     if (sla == SLA0 || sla == SLA1 || sla == SLA2) {
@@ -90,7 +161,7 @@ vector<MachineId_t> idle;
 vector<MachineId_t> off;
 
 const MachineState_t RUNNING_S_STATE = S0;
-const MachineState_t IDLE_S_STATE = S3;
+const MachineState_t IDLE_S_STATE = S1;
 const MachineState_t OFF_S_STATE = S5;
 
 struct stateChangeInfo {
@@ -144,6 +215,7 @@ void AdjustIdleSet(double alpha) {
         if (diff > 0) {
             for (int i = 0; i < max(diff, (int) off.size()); i++) {
                 // dev notes: state change issues?
+                printf("Machine #%u set to idle for adjustment\n", off[i]);
                 Machine_SetState(off[i], IDLE_S_STATE);
                 changing_state[off[i]] = {OFF_S_STATE, IDLE_S_STATE, 0};
             }
@@ -151,6 +223,7 @@ void AdjustIdleSet(double alpha) {
             diff = -diff;
             for (int i = 0; i < max(diff, (int) idle.size()); i++) {
                 // dev notes: state change issues?
+                printf("Machine #%u set to off for adjustment\n", idle[i]);
                 Machine_SetState(idle[i], OFF_S_STATE);
                 changing_state[idle[i]] = {IDLE_S_STATE, OFF_S_STATE, 0};
             }
@@ -171,14 +244,20 @@ void Scheduler::Init() {
     total_machines = Machine_GetTotal();
 
     // first test, half active / half idle
-    for (int i = 0; i < total_machines / 2; i++) {
+    for (int i = 0; i < 8; i++) {
         // dev notes: state change issues?
         Machine_SetState(i, IDLE_S_STATE);
+        changing_state[i] = {RUNNING_S_STATE, IDLE_S_STATE, 0};
         idle.push_back(i);
     }
 
-    for (int i = total_machines / 2; i < total_machines; i++) {
+    for (int i = 8; i < 16; i++) {
         running.push_back(i);
+    }
+
+    for (int i = 0; i < total_machines; i++) {
+        vector<MachineId_t> temp = {};
+        machine_matrix.push_back(temp);
     }
 
     desired_idle_set_size = idle.size();
@@ -196,19 +275,29 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
     for (MachineId_t id : running) {
         MachineInfo_t machine = Machine_GetInfo(id);
 
-        double machine_util = machine_utilization(id, now);
-        double task_util = task_utilization(task_id, id, now);
+        // double machine_util = machine_utilization(id, now);
+        // double task_util = task_utilization(task_id, id, now);
+
+        unsigned machine_util = machine_eff_mips(id, now);
+        unsigned task_util = task_eff_mips(task_id, id, now);
+        unsigned machine_max_util = machine.performance[machine.s_state];
 
         bool correct_cpu = task.required_cpu == machine.cpu;
         bool enough_mem = machine.memory_used + task.required_memory + 8 < machine.memory_size;
-        bool enough_util = machine_util + task_util <= 1.0;
+        bool enough_util = machine_util + task_util <= machine_max_util + 300;
 
         // dev notes: data struct to keep track of vm by vm_type?
-        if (correct_cpu && enough_mem && enough_util) {
+        // dev notes: is the change_state.count required?
+        if (!changing_state.count(id) && correct_cpu && enough_mem && enough_util) {
+            if (task_id == 0) printf("task #%u assigned to machine #%u\n", task_id, id);
             FindVMAddTask(id, task_id);
             return;
         }
     }
+
+    for (MachineId_t id : running) {
+        cout << machine_eff_mips(id, now) << " ";
+    } cout << endl;
 
     for (MachineId_t id : idle) {
         MachineInfo_t machine = Machine_GetInfo(id);
@@ -220,13 +309,17 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
         bool enough_mem = machine.memory_used + task.required_memory + 8 < machine.memory_size;
 
         // dev notes: state change issues? (if idle is moving around)
-        if (correct_cpu && enough_mem) {
+        // dev notes: is the change_state.count required?
+        if (!changing_state.count(id) && enough_mem) {
             // dev notes: state change issues?
+            printf("Wake idle machine #%u for new task #%u\n", id, task_id);
             Machine_SetState(id, RUNNING_S_STATE);
             changing_state[id] = {IDLE_S_STATE, RUNNING_S_STATE, task_id};
             return;
         }
     }
+
+    printf("task #%u not assigned\n", task_id);
 }
 
 void Scheduler::PeriodicCheck(Time_t now) {
@@ -235,7 +328,11 @@ void Scheduler::PeriodicCheck(Time_t now) {
     // Unlike the other invocations of the scheduler, this one doesn't report any specific event
     // Recommendation: Take advantage of this function to do some monitoring and adjustments as necessary
 
-    if (now % SECOND == 0) {
+    if (now < 593000 && now % 10000 == 0) {
+        printf("task 0 remainder: %lu\n", GetTaskInfo(0).remaining_instructions);
+    }
+    
+    if (now % (SECOND / 10) == 0) {
         if (prev_total_instr == 0) {
             prev_total_instr = global_total_instr;
             global_total_instr = 0;
@@ -266,6 +363,14 @@ void Scheduler::TaskComplete(Time_t now, TaskId_t task_id) {
     // Decide if a machine is to be turned off, slowed down, or VMs to be migrated according to your policy
     // This is an opportunity to make any adjustments to optimize performance/energy
     SimOutput("Scheduler::TaskComplete(): Task " + to_string(task_id) + " is complete at " + to_string(now), 4);
+
+    if (task_id == 0) {
+        printf("task #%u completed\n", task_id);
+        printf("task #%u now remain: %lu\n", task_id, (uint64_t) -0);
+        printf("fffffff: %lu\n", GetTaskInfo(task_id).completion);
+
+        // for (int i = 0; i < )
+    }
 }
 
 // Public interface below
@@ -330,6 +435,8 @@ void SLAWarning(Time_t time, TaskId_t task_id) {
 
 void StateChangeComplete(Time_t time, MachineId_t machine_id) {
     stateChangeInfo info = changing_state[machine_id];
+
+    printf("Machine #%u change from S%d --> S%d\n", machine_id, info.old_state, info.new_state);
     
     // either idle machine or off machine woken for task assignment
     if (info.new_state == RUNNING_S_STATE) {
@@ -352,5 +459,16 @@ void StateChangeComplete(Time_t time, MachineId_t machine_id) {
         idle.push_back(machine_id);
     } else {
         off.push_back(machine_id);
+    }
+
+    // molest
+    int hatred = info.new_state;
+
+    changing_state.erase(machine_id);
+
+    // molest
+    if (hatred != RUNNING_S_STATE) {
+        Machine_SetState(machine_id, RUNNING_S_STATE);
+        changing_state[machine_id] = {(MachineState_t) hatred, RUNNING_S_STATE, 0};
     }
 }
