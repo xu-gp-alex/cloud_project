@@ -3,7 +3,7 @@
 //  CloudSim
 //
 //  Created by ELMOOTAZBELLAH ELNOZAHY on 10/20/24.
-//
+// EEco
 
 #include "Scheduler.hpp"
 
@@ -55,7 +55,6 @@ unsigned vm_eff_mips(MachineId_t machine_id, VMId_t vm_id, Time_t curr) {
 
 // Current mips of machine
 double machine_eff_mips(MachineId_t machine_id, Time_t curr) {
-    // unsigdobuned eff_mips = 0;
     double eff_mips = 0.0;
 
     for (VMId_t vm_id : machine_matrix[machine_id]) {
@@ -86,9 +85,9 @@ Priority_t sla_to_prio(SLAType_t sla) {
 }
 
 // Managing states
-vector<MachineId_t> running;
-vector<MachineId_t> idle;
-vector<MachineId_t> off;
+vector<vector<uint64_t>> running;
+vector<vector<uint64_t>> idle;
+vector<vector<uint64_t>> off;
 
 const MachineState_t RUNNING_S_STATE = S0;
 const MachineState_t IDLE_S_STATE = S1;
@@ -109,8 +108,11 @@ const uint64_t SECOND = 1000000;
 unsigned desired_idle_set_size;
 
 uint64_t last_time = 0;
+uint64_t wait_queue_time = 0;
 
 deque<unsigned> queue;
+
+vector<vector<uint64_t>> machine_by_cpus;
 
 // Find suitable VM (or create one) on Machine for Task
 void FindVMAddTask(MachineId_t id, TaskId_t task_id) {
@@ -144,10 +146,16 @@ void Scheduler::Init() {
     
     total_machines = Machine_GetTotal();
 
-    vector<vector<uint64_t>> machine_by_cpus;
+    // we have four cpus
     for(int i = 0 ; i < 4; i++) {
         vector<uint64_t> temp = {};
         machine_by_cpus.push_back(temp);
+        vector<uint64_t> temp2 = {};
+        running.push_back(temp2);
+        vector<uint64_t> temp3 = {};
+        idle.push_back(temp3);        
+        vector<uint64_t> temp4 = {};
+        off.push_back(temp4);
     }
     
     for(int i = 0; i < total_machines; i++) {
@@ -157,24 +165,23 @@ void Scheduler::Init() {
     }
 
     for(int i = 0; i < machine_by_cpus.size(); i++) {
-        int first_thirty = ceil((double) machine_by_cpus[i].size() * 0.5);
-        int first_seventy = ceil((double) machine_by_cpus[i].size() * 0.7);
-        for(int j = 0; j < first_thirty; j++) {
-            running.push_back(machine_by_cpus[i][j]);
+        int first_set = ceil((double) machine_by_cpus[i].size() * 0.5);
+        int second_set = ceil((double) machine_by_cpus[i].size() * 0.7);
+        for(int j = 0; j < first_set; j++) {
+            running[i].push_back(machine_by_cpus[i][j]);
         } 
-        for(int j = first_thirty; j < first_seventy; j++) {
-            // printf("init to idle machine_id: %d\n", machine_by_cpus[i][j]);
+        for(int j = first_set; j < second_set; j++) {
             Machine_SetState(machine_by_cpus[i][j], IDLE_S_STATE);
             changing_state[machine_by_cpus[i][j]] = {RUNNING_S_STATE, IDLE_S_STATE, false, 0};
         }
-        for(int j = first_seventy; j < machine_by_cpus[i].size(); j++) {
-            // printf("init to off machine_id: %d\n", machine_by_cpus[i][j]);
+        for(int j = second_set; j < machine_by_cpus[i].size(); j++) {
             Machine_SetState(machine_by_cpus[i][j], OFF_S_STATE);
             changing_state[machine_by_cpus[i][j]] = {RUNNING_S_STATE, OFF_S_STATE, false, 0};
         }
     }
 }
 
+//useless because we don't migrate
 void Scheduler::MigrationComplete(Time_t time, VMId_t vm_id) {
     // Update your data structure. The VM now can receive new tasks
 }
@@ -184,16 +191,9 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
     
     // dev notes: update "running" and "idle" to account for machines
     //            of diff types and gpu capability
-
-    // for (MachineId_t id : running) {
-    //     cout << machine_eff_mips(id, now) << " ";
-    // } cout << endl;
-
-    for (MachineId_t id : running) {
+    CPUType_t task_cpu = task.required_cpu;
+    for (MachineId_t id : running[task_cpu]) {
         MachineInfo_t machine = Machine_GetInfo(id);
-
-        // double machine_util = machine_utilization(id, now);
-        // double task_util = task_utilization(task_id, id, now);
 
         double machine_util = machine_eff_mips(id, now);
         double task_util = task_eff_mips(task_id, id, now);
@@ -206,13 +206,12 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
         // dev notes: data struct to keep track of vm by vm_type?
         // dev notes: is the change_state.count required?
         if (!changing_state.count(id) && correct_cpu && enough_mem && enough_util) {
-            // if (task_id == 0) printf("task #%u assigned to machine #%u\n", task_id, id);
             FindVMAddTask(id, task_id);
             return;
         }
     }
 
-    for (MachineId_t id : idle) {
+    for (MachineId_t id : idle[task_cpu]) {
         MachineInfo_t machine = Machine_GetInfo(id);
 
         bool correct_cpu = task.required_cpu == machine.cpu;
@@ -222,14 +221,13 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
         // dev notes: is the change_state.count required?
         if (!changing_state.count(id) && correct_cpu && enough_mem) {
             // dev notes: state change issues?
-            // printf("assign to idle machine_id: %d\n", id);
             Machine_SetState(id, RUNNING_S_STATE);
             changing_state[id] = {IDLE_S_STATE, RUNNING_S_STATE, true, task_id};
             return;
         }
     }
 
-    for (MachineId_t id : off) {
+    for (MachineId_t id : off[task_cpu]) {
         MachineInfo_t machine = Machine_GetInfo(id);
 
         bool correct_cpu = task.required_cpu == machine.cpu;
@@ -239,16 +237,90 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
         // dev notes: is the change_state.count required?
         if (!changing_state.count(id) && correct_cpu && enough_mem) {
             // dev notes: state change issues?
-            // printf("assign to off machine_id: %d\n", id);
             Machine_SetState(id, RUNNING_S_STATE);
             changing_state[id] = {OFF_S_STATE, RUNNING_S_STATE, true, task_id};
             return;
         }
     }
 
-
-    // printf("task #%u not assigned\n", task_id);
     queue.push_back(task_id);
+}
+
+void updateWaitingQueue(Time_t now) {
+    //pop off tasks that are waiting
+    while(queue.size() > 0) {
+        TaskId_t task_id = queue[0];
+        TaskInfo_t task = GetTaskInfo(task_id);
+        CPUType_t task_cpu = task.required_cpu;
+        bool done = false;
+        for (MachineId_t id : running[task_cpu]) {
+            MachineInfo_t machine = Machine_GetInfo(id);
+
+            double machine_util = machine_eff_mips(id, now);
+            double task_util = task_eff_mips(task_id, id, now);
+            double machine_max_util = machine.performance[machine.p_state] * machine.num_cpus;
+
+            bool correct_cpu = task.required_cpu == machine.cpu;
+            bool enough_mem = machine.memory_used + task.required_memory + 8 < machine.memory_size;
+            bool enough_util = machine_util + task_util <= machine_max_util;
+
+            // dev notes: data struct to keep track of vm by vm_type?
+            // dev notes: is the change_state.count required?
+            if (!changing_state.count(id) && correct_cpu && enough_mem && enough_util) {
+                FindVMAddTask(id, task_id);
+                queue.pop_front();
+                done = true;
+                break;
+            }
+        }
+        if(done) {
+            continue;
+        }
+
+        for (MachineId_t id : idle[task_cpu]) {
+            MachineInfo_t machine = Machine_GetInfo(id);
+
+            bool correct_cpu = task.required_cpu == machine.cpu;
+            bool enough_mem = machine.memory_used + task.required_memory + 8 < machine.memory_size;
+
+            // dev notes: state change issues? (if idle is moving around)
+            // dev notes: is the change_state.count required?
+            if (!changing_state.count(id) && correct_cpu && enough_mem) {
+                // dev notes: state change issues?
+                Machine_SetState(id, RUNNING_S_STATE);
+                changing_state[id] = {IDLE_S_STATE, RUNNING_S_STATE, true, task_id};
+                queue.pop_front();
+                done = true;
+                break;
+            }
+        }
+        if(done) {
+            continue;
+        }
+
+        for (MachineId_t id : off[task_cpu]) {
+            MachineInfo_t machine = Machine_GetInfo(id);
+
+            bool correct_cpu = task.required_cpu == machine.cpu;
+            bool enough_mem = machine.memory_used + task.required_memory + 8 < machine.memory_size;
+
+            // dev notes: state change issues? (if idle is moving around)
+            // dev notes: is the change_state.count required?
+            if (!changing_state.count(id) && correct_cpu && enough_mem) {
+                // dev notes: state change issues?
+                Machine_SetState(id, RUNNING_S_STATE);
+                changing_state[id] = {OFF_S_STATE, RUNNING_S_STATE, true, task_id};
+                queue.pop_front();
+                done = true;
+                break;
+            }
+        }
+
+        if(done) {
+            continue;
+        }
+        break;
+    }
 }
 
 void Scheduler::PeriodicCheck(Time_t now) {
@@ -256,202 +328,116 @@ void Scheduler::PeriodicCheck(Time_t now) {
     // SchedulerCheck is called periodically by the simulator to allow you to monitor, make decisions, adjustments, etc.
     // Unlike the other invocations of the scheduler, this one doesn't report any specific event
     // Recommendation: Take advantage of this function to do some monitoring and adjustments as necessary
-    // about 0.25 sec between checks
+    // about 1 sec between checks
+    
+    if(now - wait_queue_time >= SECOND / 10) {
+        wait_queue_time = now;
+        updateWaitingQueue(now);
+    }
+
     if(now - last_time >= SECOND) {
         last_time = now;
-
-        while(queue.size() > 0) {
-            TaskId_t task_id = queue[0];
-            TaskInfo_t task = GetTaskInfo(task_id);
-            bool done = false;
-            for (MachineId_t id : running) {
-                MachineInfo_t machine = Machine_GetInfo(id);
-
-                // double machine_util = machine_utilization(id, now);
-                // double task_util = task_utilization(task_id, id, now);
-
-                double machine_util = machine_eff_mips(id, now);
-                double task_util = task_eff_mips(task_id, id, now);
-                double machine_max_util = machine.performance[machine.p_state] * machine.num_cpus;
-
-                bool correct_cpu = task.required_cpu == machine.cpu;
-                bool enough_mem = machine.memory_used + task.required_memory + 8 < machine.memory_size;
-                bool enough_util = machine_util + task_util <= machine_max_util;
-
-                // dev notes: data struct to keep track of vm by vm_type?
-                // dev notes: is the change_state.count required?
-                if (!changing_state.count(id) && correct_cpu && enough_mem && enough_util) {
-                    // if (task_id == 0) printf("task #%u assigned to machine #%u\n", task_id, id);
-                    FindVMAddTask(id, task_id);
-                    queue.pop_front();
-                    done = true;
-                    break;
-                }
-            }
-            if(done) {
-                continue;
-            }
-
-            for (MachineId_t id : idle) {
-                MachineInfo_t machine = Machine_GetInfo(id);
-
-                bool correct_cpu = task.required_cpu == machine.cpu;
-                bool enough_mem = machine.memory_used + task.required_memory + 8 < machine.memory_size;
-
-                // dev notes: state change issues? (if idle is moving around)
-                // dev notes: is the change_state.count required?
-                if (!changing_state.count(id) && correct_cpu && enough_mem) {
-                    // dev notes: state change issues?
-                    // printf("assign to idle machine_id: %d\n", id);
-                    Machine_SetState(id, RUNNING_S_STATE);
-                    changing_state[id] = {IDLE_S_STATE, RUNNING_S_STATE, true, task_id};
-                    queue.pop_front();
-                    done = true;
-                    break;
-                }
-            }
-            if(done) {
-                continue;
-            }
-
-            for (MachineId_t id : off) {
-                MachineInfo_t machine = Machine_GetInfo(id);
-
-                bool correct_cpu = task.required_cpu == machine.cpu;
-                bool enough_mem = machine.memory_used + task.required_memory + 8 < machine.memory_size;
-
-                // dev notes: state change issues? (if idle is moving around)
-                // dev notes: is the change_state.count required?
-                if (!changing_state.count(id) && correct_cpu && enough_mem) {
-                    // dev notes: state change issues?
-                    // printf("assign to off machine_id: %d\n", id);
-                    Machine_SetState(id, RUNNING_S_STATE);
-                    changing_state[id] = {OFF_S_STATE, RUNNING_S_STATE, true, task_id};
-                    queue.pop_front();
-                    done = true;
-                    break;
-                }
-            }
-
-            if(done) {
-                continue;
-            }
-            break;
-        }
-
-        
-
-        unsigned global_total_mips = 0;
-        unsigned global_max_mips = 0;
-
-        // printf("running size: %ld\n", running.size());
-        
-        for (MachineId_t id : running) {
-            MachineInfo_t info = Machine_GetInfo(id);
-
-            global_total_mips += machine_eff_mips(id, now);
-            global_max_mips += info.performance[info.p_state] * info.num_cpus;
-        }
-        
-        double global_util = global_max_mips == 0 ? 0 : (double) global_total_mips / (double) global_max_mips;
-
-        // printf("holy: %f\n", global_util);
-
-        if (global_util > 0.7) {
-            double theoretical_util = global_util;
-            
-            unsigned idle_index = 0;
-            while (idle_index < idle.size() && theoretical_util > 0.7) {
-                MachineId_t id = idle[idle_index];
-                if(!changing_state.count(id)) {
-                    // printf("periodic (idle --> running), id = #%u\n", id);
-                    Machine_SetState(id, RUNNING_S_STATE);
-                    changing_state[id] = {IDLE_S_STATE, RUNNING_S_STATE, false, 0};
-                    
+        for(int i = 0; i < 4; i++) {
+            if(machine_by_cpus[i].size() != 0) {
+                unsigned cpu_total_mips = 0;
+                unsigned cpu_max_mips = 0;
+                
+                for (MachineId_t id : running[i]) {
                     MachineInfo_t info = Machine_GetInfo(id);
-                    global_max_mips += info.performance[P0] * info.num_cpus;
-                    theoretical_util = global_max_mips == 0 ? 0 : global_total_mips / global_max_mips;
+                    cpu_total_mips += machine_eff_mips(id, now);
+                    cpu_max_mips += info.performance[info.p_state] * info.num_cpus;
                 }
+                
+                double cpu_util = cpu_max_mips == 0 ? 0 : (double) cpu_total_mips / (double) cpu_max_mips;
 
-                idle_index++;
-            }
-    
-            //idle change did not solve it
-            unsigned off_index = 0;
-            while (off_index < off.size() && theoretical_util > 0.7) {
-                MachineId_t id = off[off_index];
-                if(!changing_state.count(id)) {
-                    // printf("periodic (off --> running), id = #%u\n", id);
-                    Machine_SetState(id, RUNNING_S_STATE);
-                    changing_state[id] = {OFF_S_STATE, RUNNING_S_STATE, false, 0};
+                if (cpu_util > 0.7) {
+                    double theoretical_util = cpu_util;
                     
-                    MachineInfo_t info = Machine_GetInfo(id);
-                    global_max_mips += info.performance[P0] * info.num_cpus;
-                    theoretical_util = global_max_mips == 0 ? 0 : global_total_mips / global_max_mips;
-                }
-
-                off_index++;
-            }
-
-            //check if idle size is too small
-            int idle_size = idle.size();
-            unsigned offset_index = 0;
-            while(offset_index < idle_size && idle_size < total_machines * 0.2) {
-                MachineId_t id = off[offset_index];
-                if(!changing_state.count(id)) {
-                    // printf("periodic (off --> idle), id = #%u\n", id);
-                    Machine_SetState(id, IDLE_S_STATE);
-                    changing_state[id] = {OFF_S_STATE, IDLE_S_STATE, false, 0};
-                    idle_size++;
-                }
-
-                offset_index++;
-            }
-
-        } else if (global_util < 0.3) {
-
-            double theoretical_util = global_util;
-            
-            unsigned index = 0;
-            while (index < running.size() && theoretical_util < 0.3) {
-                MachineId_t id = running[index];
-                if(machine_eff_mips(id, now) == 0.0) {
-                    if (!changing_state.count(id)) {
-                        // printf("running -> idle machine id: %d\n", id);
-                        Machine_SetState(id, IDLE_S_STATE);
-                        changing_state[id] = {RUNNING_S_STATE, IDLE_S_STATE, false, 0};
-
-                        MachineInfo_t info = Machine_GetInfo(id);
-
-                        if (info.performance[P0] * info.num_cpus > global_max_mips) {
-                            break;
+                    unsigned idle_index = 0;
+                    while (idle_index < idle[i].size() && theoretical_util > 0.7) {
+                        MachineId_t id = idle[i][idle_index];
+                        if(!changing_state.count(id)) {
+                            Machine_SetState(id, RUNNING_S_STATE);
+                            changing_state[id] = {IDLE_S_STATE, RUNNING_S_STATE, false, 0};
+                            
+                            MachineInfo_t info = Machine_GetInfo(id);
+                            cpu_max_mips += info.performance[P0] * info.num_cpus;
+                            theoretical_util = cpu_max_mips == 0 ? 0 : cpu_total_mips / cpu_max_mips;
                         }
 
-                        global_max_mips -= info.performance[P0] * info.num_cpus;
+                        idle_index++;
+                    }
+            
+                    //idle change did not solve it
+                    unsigned off_index = 0;
+                    while (off_index < off[i].size() && theoretical_util > 0.7) {
+                        MachineId_t id = off[i][off_index];
+                        if(!changing_state.count(id)) {
+                            Machine_SetState(id, RUNNING_S_STATE);
+                            changing_state[id] = {OFF_S_STATE, RUNNING_S_STATE, false, 0};
+                            
+                            MachineInfo_t info = Machine_GetInfo(id);
+                            cpu_max_mips += info.performance[P0] * info.num_cpus;
+                            theoretical_util = cpu_max_mips == 0 ? 0 : cpu_total_mips / cpu_max_mips;
+                        }
 
-                        theoretical_util = global_max_mips == 0 ? 0 : global_total_mips / global_max_mips;
+                        off_index++;
+                    }
+
+                    //check if idle size is too small
+                    int idle_size = idle[i].size();
+                    unsigned offset_index = 0;
+                    while(offset_index < idle_size && idle_size < machine_by_cpus[i].size() * 0.2) {
+                        MachineId_t id = off[i][offset_index];
+                        if(!changing_state.count(id)) {
+                            Machine_SetState(id, IDLE_S_STATE);
+                            changing_state[id] = {OFF_S_STATE, IDLE_S_STATE, false, 0};
+                            idle_size++;
+                        }
+
+                        offset_index++;
+                    }
+
+                } else if (cpu_util < 0.3) {
+
+                    double theoretical_util = cpu_util;
+                    
+                    unsigned index = 0;
+                    while (index < running[i].size() && theoretical_util < 0.3) {
+                        MachineId_t id = running[i][index];
+                        if(machine_eff_mips(id, now) == 0.0) {
+                            if (!changing_state.count(id)) {
+                                Machine_SetState(id, IDLE_S_STATE);
+                                changing_state[id] = {RUNNING_S_STATE, IDLE_S_STATE, false, 0};
+
+                                MachineInfo_t info = Machine_GetInfo(id);
+
+                                if (info.performance[P0] * info.num_cpus > cpu_max_mips) {
+                                    break;
+                                }
+
+                                cpu_max_mips -= info.performance[P0] * info.num_cpus;
+
+                                theoretical_util = cpu_max_mips == 0 ? 0 : cpu_total_mips / cpu_max_mips;
+                            }
+                        }
+
+                        index++;
+                    }
+
+                    //check if idle size is too big
+                    int idle_size = idle[i].size();
+                    unsigned idle_index = 0;
+                    while(idle_index < idle_size && idle_size > (double) machine_by_cpus[i].size() * 0.5) {
+                        MachineId_t id = idle[i][idle_index];
+                        if(!changing_state.count(id)) {
+                            Machine_SetState(id, OFF_S_STATE);
+                            changing_state[id] = {IDLE_S_STATE, OFF_S_STATE, false, 0};
+                            idle_size--;
+                        }
+                        idle_index++;
                     }
                 }
-                // printf("theortical util: %f\n", theoretical_util);
-
-                index++;
-            }
-
-            // printf("are setting running --> off\n");
-
-            //check if idle size is too big
-            int idle_size = idle.size();
-            unsigned idle_index = 0;
-            while(idle_index < idle_size && idle_size > (double) total_machines * 0.5) {
-                MachineId_t id = idle[idle_index];
-                if(!changing_state.count(id)) {
-                    // printf("idle -> off machine id: %d\n", id);
-                    Machine_SetState(id, OFF_S_STATE);
-                    changing_state[id] = {IDLE_S_STATE, OFF_S_STATE, false, 0};
-                    idle_size--;
-                }
-
-                idle_index++;
             }
         }
     }
@@ -473,7 +459,6 @@ void Scheduler::TaskComplete(Time_t now, TaskId_t task_id) {
     // Do any bookkeeping necessary for the data structures
     // Decide if a machine is to be turned off, slowed down, or VMs to be migrated according to your policy
     // This is an opportunity to make any adjustments to optimize performance/energy
-    // printf("done with task: %u\n at time %lu", task_id, now);
     SimOutput("Scheduler::TaskComplete(): Task " + to_string(task_id) + " is complete at " + to_string(now), 4);
 }
 
@@ -532,30 +517,29 @@ void SLAWarning(Time_t time, TaskId_t task_id) {
 
 void StateChangeComplete(Time_t time, MachineId_t machine_id) {
     stateChangeInfo info = changing_state[machine_id];
-
-    // printf("Machine #%u change from S%d --> S%d\n", machine_id, info.old_state, info.new_state);
     
     // either idle machine or off machine woken for task assignment
     if (info.new_state == RUNNING_S_STATE && info.attach_task) {
         FindVMAddTask(machine_id, info.task);
     }
 
+    CPUType_t machine_cpu = Machine_GetInfo(machine_id).cpu;
     // dev notes: state change issues?
     if (info.old_state == RUNNING_S_STATE) {
-        running.erase(remove(running.begin(), running.end(), machine_id), running.end());
+        running[machine_cpu].erase(remove(running[machine_cpu].begin(), running[machine_cpu].end(), machine_id), running[machine_cpu].end());
     } else if (info.old_state == IDLE_S_STATE) {
-        idle.erase(remove(idle.begin(), idle.end(), machine_id), idle.end());
+        idle[machine_cpu].erase(remove(idle[machine_cpu].begin(), idle[machine_cpu].end(), machine_id), idle[machine_cpu].end());
     } else {
-        off.erase(remove(off.begin(), off.end(), machine_id), off.end());
+        off[machine_cpu].erase(remove(off[machine_cpu].begin(), off[machine_cpu].end(), machine_id), off[machine_cpu].end());
     }
 
     // dev notes: state change issues?
     if (info.new_state == RUNNING_S_STATE) {
-        running.push_back(machine_id);
+        running[machine_cpu].push_back(machine_id);
     } else if (info.old_state == IDLE_S_STATE) {
-        idle.push_back(machine_id);
+        idle[machine_cpu].push_back(machine_id);
     } else {
-        off.push_back(machine_id);
+        off[machine_cpu].push_back(machine_id);
     }
 
     changing_state.erase(machine_id);

@@ -3,7 +3,7 @@
 //  CloudSim
 //
 //  Created by ELMOOTAZBELLAH ELNOZAHY on 10/20/24.
-//
+// pMapper
 
 #include "Scheduler.hpp"
 
@@ -163,7 +163,7 @@ void Scheduler::MigrationComplete(Time_t time, VMId_t vm_id) {
 
 void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
     TaskInfo_t task_info = GetTaskInfo(task_id);
-
+    bool found = false;
     for(MachineId_t id : eff_list) {
         MachineInfo_t curr_machine = Machine_GetInfo(id);
         double task_util = task_utilization(task_id, id, now);
@@ -177,8 +177,20 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
 
                 machine_matrix[id].push_back(new_vm);
                 task_to_vm[task_id] = new_vm;
-                return;
+                found = true;
+                break;
             }
+    }
+    if(found) {
+        for(MachineId_t id : eff_list) {
+            MachineInfo_t curr_machine = Machine_GetInfo(id);
+            if(machine_utilization(id, now) == 0.0) {
+                Machine_SetState(id, S1);
+                state_changing_machines[id] = {true, 0, 0};
+                break;
+            }
+        }    
+        return;
     }
 
     for(MachineId_t id : eff_list) {
@@ -194,18 +206,37 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
 
                 machine_matrix[id].push_back(new_vm);
                 task_to_vm[task_id] = new_vm;
-                return;
+                found = true;
+                break;
             }
             Machine_SetState(id, S0);
             state_changing_machines[id] = {true, task_id, 0};
-            return;
+            found = true;
+            break;
         }
     }
 
-    queue.push_back(task_id);
+    if(!found) {
+        queue.push_back(task_id);
+    }
+    else {
+        for(MachineId_t id : eff_list) {
+            MachineInfo_t curr_machine = Machine_GetInfo(id);
+            if(machine_utilization(id, now) == 0.0) {
+                Machine_SetState(id, S1);
+                state_changing_machines[id] = {true, 0, 0};
+                break;
+            }
+        }
+        return;
+    }
 }
 
 void Scheduler::PeriodicCheck(Time_t now) {
+    // This method should be called from SchedulerCheck()
+    // SchedulerCheck is called periodically by the simulator to allow you to monitor, make decisions, adjustments, etc.
+    // Unlike the other invocations of the scheduler, this one doesn't report any specific event
+    // Recommendation: Take advantage of this function to do some monitoring and adjustments as necessary
     if(now - last >= 1000000) {
         last = now;
         while(queue.size() > 0) {
@@ -265,10 +296,6 @@ void Scheduler::PeriodicCheck(Time_t now) {
             break;
         }
     }
-    // This method should be called from SchedulerCheck()
-    // SchedulerCheck is called periodically by the simulator to allow you to monitor, make decisions, adjustments, etc.
-    // Unlike the other invocations of the scheduler, this one doesn't report any specific event
-    // Recommendation: Take advantage of this function to do some monitoring and adjustments as necessary
 }
 
 void Scheduler::Shutdown(Time_t time) {
@@ -284,7 +311,6 @@ void Scheduler::Shutdown(Time_t time) {
 }
 
 void Scheduler::TaskComplete(Time_t now, TaskId_t task_id) {
-    // printf("Completed task #%u\n", task_id);
     // Do any bookkeeping necessary for the data structures
     // Decide if a machine is to be turned off, slowed down, or VMs to be migrated according to your policy
     // This is an opportunity to make any adjustments to optimize performance/energy
@@ -302,11 +328,11 @@ void Scheduler::TaskComplete(Time_t now, TaskId_t task_id) {
 
     sort(util_list.begin(), util_list.end(), util_comp);
     vector<unsigned> total_util;
+    vector<unsigned> mem_usage;
     for(int i = 0; i < total_machines; i++) {
-        // cout << machine_utilization(util_list[i], now) << " | ";
         total_util.push_back(machine_utilization(util_list[i], now));
+        mem_usage.push_back(Machine_GetInfo(util_list[i]).memory_used);
     }
-    // cout << endl;
 
     for(int i = 0; i < total_machines / 2; i++) {
         MachineId_t curr_machine_id = util_list[i];
@@ -324,9 +350,9 @@ void Scheduler::TaskComplete(Time_t now, TaskId_t task_id) {
                         MachineInfo_t new_machine = Machine_GetInfo((MachineId_t) util_list[k]);
                         if(new_machine.s_state == S0 && new_machine.cpu == task_info.required_cpu && 
                             vm_util + total_util[k] < 1.0 && 
-                            new_machine.memory_used + task_info.required_memory + 8 < new_machine.memory_size) {
+                            mem_usage[k] + task_info.required_memory + 8 < new_machine.memory_size) {
                             total_util[k] += vm_util;
-                            // printf("Task Complete: vm %d, machine %d\n", vm_id, util_list[k]);
+                            mem_usage[k] += task_info.required_memory + 8;
                             VM_Migrate(vm_id, (MachineId_t) util_list[k]);
                             machine_matrix[curr_machine_id].erase(remove(machine_matrix[curr_machine_id].begin(), 
                                 machine_matrix[curr_machine_id].end(), vm_id), machine_matrix[curr_machine_id].end());

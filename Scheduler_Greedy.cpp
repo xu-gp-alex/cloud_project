@@ -4,6 +4,7 @@
 //
 //  Created by ELMOOTAZBELLAH ELNOZAHY on 10/20/24.
 //
+// Greedy
 
 #include "Scheduler.hpp"
 
@@ -12,6 +13,8 @@
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
+#include <queue>
+#include <deque>
 
 using namespace std;
 //stores machines and vms on the machines
@@ -38,6 +41,11 @@ struct state_change_info {
 unordered_map<unsigned, state_change_info> state_changing_machines;
 
 int rand_machine_index;
+
+// dev notes: new e-eco tech
+deque<unsigned> not_assigned_queue;
+Time_t last_time = 0;
+const uint64_t SECOND = 1000000;
 
 bool state_changing_machines_contains(unsigned key)
 {
@@ -150,7 +158,6 @@ void Scheduler::Init() {
 
 void Scheduler::MigrationComplete(Time_t time, VMId_t vm_id) {
     MachineId_t machine_id = VM_GetInfo(vm_id).machine_id;
-    // machine_matrix[machine_id].push_back(vm_id);
     migrating_vms.erase(vm_id);
 }
 
@@ -165,19 +172,8 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
             task_util + machine_utilization(id, now) < 1.0 && 
             curr_machine.memory_used + task_info.required_memory + 8 < curr_machine.memory_size &&
             curr_machine.s_state == S0 && !state_changing_machines_contains(id)) {
-                // printf("task #%u assigned to active machine #%u\n", task_id, id);
-                // for (int i = 0; i < machine_matrix[id].size(); i++) {
-                //     VMId_t vm_id = machine_matrix[id][i];
-                //     VMInfo_t vm_info = VM_GetInfo(vm_id);
-                //     if (vm_info.vm_type == task_info.required_vm) {
-                //         VM_AddTask(vm_id, task_id, sla_to_prio(task_info.required_sla));
-                //         task_to_vm[task_id] = vm_id;
-                //         return;
-                //     }
-                // }
                 
                 VMId_t new_vm = VM_Create(task_info.required_vm, task_info.required_cpu);
-                // printf("vm attach on active machine\n");
                 VM_Attach(new_vm, id);
                 VM_AddTask(new_vm, task_id, sla_to_prio(task_info.required_sla));
 
@@ -196,66 +192,12 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
             inactive.erase(remove(inactive.begin(), inactive.end(), id), inactive.end());
             Machine_SetState(id, S0);
 
-            // state_change_info info = {true, task_id, 0};
             state_changing_machines[id] = {true, task_id, 0};
             return;
         }
     }
 
-    sort(active.begin(), active.end(), util_comp);
-    for(MachineId_t id : active) {
-        // printf("forced alloc lol\n");
-        MachineInfo_t curr_machine = Machine_GetInfo(id);
-        if(!state_changing_machines_contains(id) && curr_machine.cpu == task_info.required_cpu
-                && curr_machine.s_state == S0) {
-            // for (int i = 0; i < machine_matrix[rand_machine].size(); i++) {
-            //     VMId_t vm_id = machine_matrix[rand_machine][i];
-            //     VMInfo_t vm_info = VM_GetInfo(vm_id);
-            //     if (vm_info.vm_type == task_info.required_vm) {
-            //         cout << "addressing tasks??" << endl;
-            //         VM_AddTask(vm_id, task_id, sla_to_prio(task_info.required_sla));
-            //         task_to_vm[task_id] = vm_id;
-            //         return;
-            //     }
-            // }
-            VMId_t new_vm = VM_Create(task_info.required_vm, task_info.required_cpu);
-            // printf("from newTask\n");
-            VM_Attach(new_vm, id);
-            VM_AddTask(new_vm, task_id, sla_to_prio(task_info.required_sla));
-            machine_matrix[id].push_back(new_vm);
-            task_to_vm[task_id] = new_vm;
-            return;
-        }
-    }
-
-
-    // printf("which cpu: %d\n", task_info.required_cpu);
-    //put on a random machine
-    for(int index = 0; index < total_machines; index++) {
-        MachineId_t rand_machine = (rand_machine_index + index) % total_machines;
-        rand_machine_index++;
-        MachineInfo_t curr_machine = Machine_GetInfo(rand_machine);
-        if(!state_changing_machines_contains(rand_machine) && curr_machine.cpu == task_info.required_cpu
-                && curr_machine.s_state == S0) {
-            // for (int i = 0; i < machine_matrix[rand_machine].size(); i++) {
-            //     VMId_t vm_id = machine_matrix[rand_machine][i];
-            //     VMInfo_t vm_info = VM_GetInfo(vm_id);
-            //     if (vm_info.vm_type == task_info.required_vm) {
-            //         cout << "addressing tasks??" << endl;
-            //         VM_AddTask(vm_id, task_id, sla_to_prio(task_info.required_sla));
-            //         task_to_vm[task_id] = vm_id;
-            //         return;
-            //     }
-            // }
-            VMId_t new_vm = VM_Create(task_info.required_vm, task_info.required_cpu);
-            // printf("from newTask\n");
-            VM_Attach(new_vm, rand_machine);
-            VM_AddTask(new_vm, task_id, sla_to_prio(task_info.required_sla));
-            machine_matrix[rand_machine].push_back(new_vm);
-            task_to_vm[task_id] = new_vm;
-            return;
-        }
-    }
+    not_assigned_queue.push_back(task_id);
 }
 
 void Scheduler::PeriodicCheck(Time_t now) {
@@ -263,6 +205,62 @@ void Scheduler::PeriodicCheck(Time_t now) {
     // SchedulerCheck is called periodically by the simulator to allow you to monitor, make decisions, adjustments, etc.
     // Unlike the other invocations of the scheduler, this one doesn't report any specific event
     // Recommendation: Take advantage of this function to do some monitoring and adjustments as necessary
+
+    if (now - last_time > SECOND) {
+        last_time = now;
+
+        while (not_assigned_queue.size() > 0) {
+            // dev notes: could also be not_assigned_queue.front()?
+            TaskId_t task_id = not_assigned_queue.front();
+            TaskInfo_t task_info = GetTaskInfo(task_id);
+
+            bool task_assigned = false;
+
+            for(MachineId_t id : active) {
+                MachineInfo_t curr_machine = Machine_GetInfo(id);
+                double task_util = task_utilization(task_id, id, now);
+                if(curr_machine.cpu == task_info.required_cpu && 
+                    task_util + machine_utilization(id, now) < 1.0 && 
+                    curr_machine.memory_used + task_info.required_memory + 8 < curr_machine.memory_size &&
+                    curr_machine.s_state == S0 && !state_changing_machines_contains(id)) {
+                        
+                    VMId_t new_vm = VM_Create(task_info.required_vm, task_info.required_cpu);
+                    VM_Attach(new_vm, id);
+                    VM_AddTask(new_vm, task_id, sla_to_prio(task_info.required_sla));
+
+                    machine_matrix[id].push_back(new_vm);
+                    task_to_vm[task_id] = new_vm;
+                    
+                    not_assigned_queue.pop_front();
+                    task_assigned = true;
+                    break;
+                }
+            }
+
+            if (task_assigned) continue;
+
+            for(MachineId_t id : inactive) {
+                MachineInfo_t curr_machine = Machine_GetInfo(id);
+                if(curr_machine.cpu == task_info.required_cpu) {
+                    inactive.erase(remove(inactive.begin(), inactive.end(), id), inactive.end());
+                    Machine_SetState(id, S0);
+
+                    // state_change_info info = {true, task_id, 0};
+                    state_changing_machines[id] = {true, task_id, 0};
+                    
+                    not_assigned_queue.pop_front();
+                    task_assigned = true;
+                    break;
+                }
+            }
+
+            if (task_assigned) continue;
+
+            // dev notes: why break here?
+            // break because we must end as no machines are free
+            break;
+        }
+    }
 }
 
 void Scheduler::Shutdown(Time_t time) {
@@ -494,6 +492,8 @@ void StateChangeComplete(Time_t time, MachineId_t machine_id) {
     // printf("after: %ld\n", state_changing_machines.size());
 
 }
+
+
 
 
 
